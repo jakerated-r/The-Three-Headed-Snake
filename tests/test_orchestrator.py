@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ORCH_SCRIPT = REPO_ROOT / "src" / "orchestrator" / "three-headed-snake-orchestrator.py"
@@ -84,17 +85,20 @@ class ThreeHeadedSnakeOrchestratorTests(unittest.TestCase):
         self.assertEqual(phases.count("handoff"), 3)
         self.assertEqual(phases.count("working"), 3)
         self.assertIn(("Codex", "Maestro"), [(event.from_agent, event.to_agent) for event in events])
-        self.assertIn("Build lane online", events[0].text)
+        self.assertIn("Got you", events[0].text)
+        self.assertIn("real answer", events[0].text)
+        self.assertNotIn("Build lane", events[0].text)
 
     def test_room_dialogue_posts_plain_english_between_agents(self) -> None:
         group = orchestrator.group_messages([self.architect_message("Codex")])[0]
         events = orchestrator.build_room_dialogue(group)
-        self.assertEqual(len(events), 4)
+        self.assertEqual(len(events), 3)
         self.assertEqual(events[0].from_agent, "Codex")
-        self.assertEqual(events[0].to_agent, "Maestro")
+        self.assertEqual(events[0].to_agent, "Architect")
         self.assertEqual(events[0].kind, "note")
         self.assertEqual(events[0].phase, "dialogue")
-        self.assertIn("I’ve got the build lane", events[0].text)
+        self.assertIn("real answer", events[0].text)
+        self.assertNotIn("build lane", events[0].text)
 
     def test_state_store_dedupes_processed_group_keys(self) -> None:
         group = orchestrator.group_messages([self.architect_message("Codex")])[0]
@@ -106,6 +110,14 @@ class ThreeHeadedSnakeOrchestratorTests(unittest.TestCase):
             state.save()
             reloaded = orchestrator.StateStore(state_path)
             self.assertTrue(reloaded.has_processed(group.key))
+
+    def test_runner_launch_acks_failures_to_prevent_duplicate_blocker_storms(self) -> None:
+        group = orchestrator.group_messages([self.architect_message("Codex")])[0]
+        with patch.object(orchestrator.subprocess, "Popen") as popen:
+            orchestrator.launch_architect_runner(group, timeout=90)
+        cmd = popen.call_args.args[0]
+        self.assertIn("--ack-failures", cmd)
+        self.assertEqual(cmd[cmd.index("--timeout") + 1], "90")
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -205,7 +207,7 @@ class CoopChatTests(unittest.TestCase):
                 "status": "open",
                 "body": {
                     "type": "snake-room-line",
-                    "text": "I’ve got the build lane. Maestro, keep Jake’s standard sharp.",
+                    "text": "Codex status: proof is running in the background.",
                 },
             },
             no_color=True,
@@ -213,8 +215,64 @@ class CoopChatTests(unittest.TestCase):
         )
         self.assertIn("CODEX", line)
         self.assertIn("→ Maestro", line)
-        self.assertIn("I’ve got the build lane.", line)
+        self.assertIn("proof is running in the background", line)
         self.assertNotIn("snake-room-line", line)
+
+    def test_peer_verify_string_evidence_does_not_crash_chat_loop(self) -> None:
+        line = coop_chat.render_chat_message(
+            {
+                "id": 70,
+                "message_id": "verify-string-evidence",
+                "created_at": "2026-06-03T21:06:00Z",
+                "created_ns": 1_780_520_760_000_000_000,
+                "from_agent": "Maestro",
+                "to_agent": "Codex",
+                "kind": "review",
+                "priority": 10,
+                "target": "string-evidence-unit",
+                "status": "open",
+                "body": {
+                    "type": "peer-verification-required",
+                    "goal": "Verify the live chat terminal stays up.",
+                    "claim_id": "abcdef12-3456-7890",
+                    "evidence": "Terminal was open, but renderer crashed on a non-dict evidence payload.",
+                },
+            },
+            no_color=True,
+            width=140,
+        )
+        self.assertIn("VERIFY REQUEST", line)
+        self.assertIn("Terminal was open", line)
+
+    def test_latest_message_id_reads_true_sqlite_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "broker.sqlite3"
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY)")
+            conn.executemany("INSERT INTO messages (id) VALUES (?)", [(3,), (91,), (3454,)])
+            conn.commit()
+            conn.close()
+
+            old_path = coop_chat.SQLITE_PATH
+            try:
+                coop_chat.SQLITE_PATH = db
+                self.assertEqual(coop_chat.latest_message_id(), 3454)
+            finally:
+                coop_chat.SQLITE_PATH = old_path
+
+    def test_agent_send_payload_is_not_jake_authored(self) -> None:
+        thread, payload = coop_chat.build_room_line_message(
+            "Codex status: proof is running in the background.",
+            "Codex",
+            ("Codex", "Maestro", "Gemini"),
+            target="agent-line-unit",
+        )
+        self.assertEqual(thread, "agent-line-unit")
+        self.assertEqual(payload["from_agent"], "Codex")
+        self.assertEqual(payload["to_agent"], "Architect")
+        self.assertEqual(payload["kind"], "note")
+        self.assertEqual(payload["body"]["type"], "snake-room-line")
+        self.assertIn("background", payload["body"]["text"])
 
     def test_conversation_view_hides_broker_plumbing(self) -> None:
         seen: set[tuple[str, str]] = set()
@@ -240,6 +298,25 @@ class CoopChatTests(unittest.TestCase):
                     "kind": "note",
                     "target": "room-unit",
                     "body": {"type": "snake-room-line", "text": "Plain English."},
+                },
+                seen,
+            )
+        )
+
+    def test_conversation_view_hides_legacy_role_ceremony(self) -> None:
+        seen: set[tuple[str, str]] = set()
+        self.assertTrue(
+            coop_chat.is_plumbing_message(
+                {
+                    "id": 9,
+                    "from_agent": "Codex",
+                    "to_agent": "Maestro",
+                    "kind": "note",
+                    "target": "room-unit",
+                    "body": {
+                        "type": "snake-room-line",
+                        "text": "I’ve got the " + "build lane. Maestro, keep Jake’s standard sharp.",
+                    },
                 },
                 seen,
             )
@@ -306,6 +383,8 @@ class CoopChatTests(unittest.TestCase):
             self.assertEqual(payload["priority"], 10)
             self.assertEqual(payload["body"]["type"], "architect-prompt")
             self.assertEqual(payload["body"]["prompt"], "Status from all three.")
+            self.assertIn("normal group chat", payload["body"]["instructions"])
+            self.assertIn("no role ceremony", payload["body"]["instructions"])
 
 
 if __name__ == "__main__":

@@ -12,8 +12,8 @@ What you see:
     [14:54:32] MAESTRO
       YES handle these suggestions — execute all
 
-    [14:54:33] CODEX → Maestro · co-builder auto-engage
-      ACK broker AGENTS-set extension. Wiring pre-response hook now.
+    [14:54:33] CODEX → Architect
+      I read you. I’m checking the moving parts and I’ll bring back the real result here.
 
     [14:54:33] GEMINI → Maestro · co-builder auto-engage
       Standing by. Pre-prompt wrapper installed via ~/.zshrc alias.
@@ -23,6 +23,7 @@ Modes:
   interactive TTY        press Enter to broadcast Jake's prompt to all three
   /to Gemini <prompt>    send to one agent from the live console
   --send TEXT            send one Architect prompt and exit (test/script mode)
+  --from-agent Codex     send a visible agent room line instead of a Jake/Architect prompt
   --replay N             show last N then tail
   --no-tail              show replay/new messages then exit (test/snapshot mode)
   --sqlite               read SQLite directly (faster, no token)
@@ -65,6 +66,7 @@ PYTHON_BIN = os.environ.get("COOP_PYTHON_BIN", "/usr/bin/python3")
 POLL_MS_DEFAULT = 25
 ARCHITECT_AGENT = "Architect"
 SNAKE_AGENTS = ("Codex", "Maestro", "Gemini")
+CHAT_SENDERS = ("Architect", "Codex", "Maestro", "Gemini", "Bridge")
 
 # ----- ANSI colors --------------------------------------------------------
 class C:
@@ -175,6 +177,35 @@ def clean_runner_stdout(text: str) -> str:
     return cleaned
 
 
+def summarize_runner_failure(body: dict) -> str:
+    """Collapse CLI stderr into one plain-language blocker line for the live IM view."""
+    agent = str(body.get("agent") or "Agent")
+    exit_code = body.get("exit")
+    stderr = str(body.get("stderr_tail") or "").strip()
+    artifacts = str(body.get("artifacts") or "").strip()
+    lower = stderr.lower()
+    if "credit balance is too low" in lower or "credit_balance_too_low" in lower:
+        reason = "Claude tried the API-credit path; Maestro must use subscription auth"
+    elif agent == "Maestro" and ("authentication_error" in lower or "invalid authentication credentials" in lower or "failed to authenticate" in lower):
+        reason = "Claude subscription token needs refresh; API auth is disabled for Maestro"
+    elif "authentication_error" in lower or "invalid authentication credentials" in lower or "failed to authenticate" in lower or "invalid x-api-key" in lower or "api key" in lower and "invalid" in lower:
+        reason = "CLI authentication failed"
+    elif "ineligibletiererror" in stderr or "not eligible" in lower and "gemini" in lower:
+        reason = "Gemini CLI account tier is not eligible for this run"
+    elif "code assist" in lower and ("not eligible" in lower or "tier" in lower):
+        reason = "Gemini Code Assist is blocked by account tier"
+    elif "[timeout]" in lower or "timed out" in lower:
+        reason = "CLI run timed out"
+    elif "cli binary is not available" in lower:
+        reason = "CLI binary is missing"
+    elif exit_code is not None:
+        reason = f"CLI exited with code {exit_code}"
+    else:
+        reason = "CLI failed"
+    suffix = f"\n  Evidence: {artifacts}" if artifacts else ""
+    return f"{agent} is blocked: {reason}.{suffix}"
+
+
 def parse_body(body: object) -> tuple[dict, str]:
     """Returns (body_dict_or_None, plain_text). Handles JSON-string bodies + envelope unwrap."""
     if isinstance(body, str):
@@ -278,6 +309,8 @@ def extract_plain_english(body: object, *, show_plumbing: bool = False) -> str:
         goal = b.get("goal", "?")
         claim_id = (b.get("claim_id") or "?")[:8]
         ev = b.get("evidence") or {}
+        if not isinstance(ev, dict):
+            ev = {"summary": str(ev)}
         summary = ev.get("summary", "")
         return f"VERIFY REQUEST · claim={claim_id} · {goal}\n  {summary[:500]}"
 
@@ -289,11 +322,15 @@ def extract_plain_english(body: object, *, show_plumbing: bool = False) -> str:
         stderr = (b.get("stderr_tail") or "").strip()
         artifacts = b.get("artifacts")
         parts = [f"{agent}: {verdict}" if agent else f"{verdict}"] if show_plumbing else []
-        if stdout:
+        if verdict != "PASS" and not show_plumbing:
+            failure_body = dict(b)
+            failure_body["stderr_tail"] = "\n".join(part for part in (stdout, stderr) if part).strip()
+            parts.append(summarize_runner_failure(failure_body))
+        elif stdout:
             cleaned = clean_runner_stdout(stdout)
             if cleaned:
                 parts.append(cleaned)
-        if stderr and verdict != "PASS":
+        if stderr and verdict != "PASS" and show_plumbing:
             parts.append(f"stderr: {stderr[:300]}")
         if artifacts and show_plumbing:
             parts.append(f"artifacts: {artifacts}")
@@ -381,6 +418,24 @@ def architect_prompt_key(msg: dict) -> tuple[str, str] | None:
     return (str(msg.get("target") or body.get("thread") or ""), prompt)
 
 
+def is_legacy_role_ceremony(body: dict) -> bool:
+    text = str(body.get("text") or "").lower()
+    legacy_phrases = (
+        "i’ve got the build lane",
+        "i've got the build lane",
+        "standards lane",
+        "outside-angle lane",
+        "implementation lane claimed",
+        "i’ll hold the criteria and final judgment",
+        "i'll hold the criteria and final judgment",
+        "watch for blind spots",
+        "keep the room honest",
+        "pressure-test the standard",
+        "this room is moving in plain english now. the plumbing is still running underneath",
+    )
+    return any(phrase in text for phrase in legacy_phrases)
+
+
 def is_plumbing_message(msg: dict, seen_architect_prompts: set[tuple[str, str]]) -> bool:
     """Default chat hides durable broker machinery and keeps human-readable room lines."""
     body = msg.get("body")
@@ -393,7 +448,7 @@ def is_plumbing_message(msg: dict, seen_architect_prompts: set[tuple[str, str]])
     body_type = str(body.get("type") or "")
 
     if body_type == "snake-room-line":
-        return False
+        return is_legacy_role_ceremony(body)
     if body_type in {"auto-engage", "peer-verification-required", "snake-live-event"}:
         return True
     if body_type in {"gemini-run-result", "test-run-result"}:
@@ -461,6 +516,20 @@ def fetch(since_id: int, limit: int, source: str) -> list[dict]:
         return fetch_sqlite(since_id, limit)
 
 
+def latest_message_id() -> int:
+    """Return the true latest broker message id without relying on capped HTTP pages."""
+    if SQLITE_PATH.exists():
+        uri = f"file:{SQLITE_PATH}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+        try:
+            row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM messages").fetchone()
+            return int(row[0] or 0)
+        finally:
+            conn.close()
+    msgs = fetch(0, 10000, "http")
+    return max((int(m.get("id", 0) or 0) for m in msgs), default=0)
+
+
 # ----- Architect prompt input / dispatch ----------------------------------
 class ChatCommandError(ValueError):
     """Bad Architect console command."""
@@ -502,6 +571,23 @@ def normalize_recipient(raw: str) -> str:
     if value not in aliases:
         raise ChatCommandError("recipient must be Codex, Maestro, Gemini, Claude, or all")
     return aliases[value]
+
+
+def normalize_sender(raw: str) -> str:
+    value = (raw or ARCHITECT_AGENT).strip()
+    aliases = {
+        "jake": ARCHITECT_AGENT,
+        "architect": ARCHITECT_AGENT,
+        "codex": "Codex",
+        "maestro": "Maestro",
+        "claude": "Maestro",
+        "gemini": "Gemini",
+        "bridge": "Bridge",
+    }
+    normalized = aliases.get(value.lower(), value)
+    if normalized not in CHAT_SENDERS:
+        raise ChatCommandError("sender must be Architect, Jake, Codex, Maestro, Claude, Gemini, or Bridge")
+    return normalized
 
 
 def recipients_from_target(raw: str) -> tuple[str, ...]:
@@ -547,12 +633,53 @@ def build_architect_prompt_messages(
                     "target_agent": recipient,
                     "instructions": (
                         "Treat this as Jake speaking from the Three Headed Snake XXX terminal. "
-                        "Answer or act through the coop broker/terminal path, in plain English."
+                        "Answer through the coop broker/terminal like a normal group chat: casual, direct, useful, and no role ceremony."
                     ),
                 },
             }
         )
     return thread, payloads
+
+
+def build_room_line_message(
+    text: str,
+    sender: str,
+    recipients: tuple[str, ...] | list[str],
+    *,
+    target: str | None = None,
+    priority: int = 7,
+) -> tuple[str, dict]:
+    clean_text = (text or "").strip()
+    if not clean_text:
+        raise ChatCommandError("message cannot be empty")
+    source = normalize_sender(sender)
+    if source == ARCHITECT_AGENT:
+        raise ChatCommandError("Architect prompts must use build_architect_prompt_messages")
+    normalized_recipients = tuple(dict.fromkeys(normalize_recipient(agent) for agent in recipients))
+    if len(normalized_recipients) == 1 and normalized_recipients[0] != source:
+        to_agent = normalized_recipients[0]
+        listener = to_agent
+    else:
+        to_agent = ARCHITECT_AGENT
+        listener = "room"
+    thread = target or new_architect_thread()
+    return thread, {
+        "from_agent": source,
+        "to_agent": to_agent,
+        "kind": "note",
+        "priority": max(1, min(priority, 10)),
+        "target": thread,
+        "body": {
+            "type": "snake-room-line",
+            "conversation_id": thread,
+            "source_kind": "agent-room-line",
+            "originator": source,
+            "speaker": source,
+            "listener": listener,
+            "recipients": list(normalized_recipients),
+            "text": clean_text,
+        },
+    }
 
 
 def send_architect_prompt(
@@ -565,6 +692,18 @@ def send_architect_prompt(
     thread, payloads = build_architect_prompt_messages(prompt, recipients, target=target, priority=priority)
     responses = [post_broker_message(payload) for payload in payloads]
     return thread, responses
+
+
+def send_room_line(
+    text: str,
+    sender: str,
+    recipients: tuple[str, ...] | list[str],
+    *,
+    target: str | None = None,
+    priority: int = 7,
+) -> tuple[str, list[dict]]:
+    thread, payload = build_room_line_message(text, sender, recipients, target=target, priority=priority)
+    return thread, [post_broker_message(payload)]
 
 
 def trigger_architect_runner(thread: str, recipients: tuple[str, ...] | list[str]) -> None:
@@ -581,6 +720,7 @@ def trigger_architect_runner(thread: str, recipients: tuple[str, ...] | list[str
         ",".join(recipients),
         "--limit",
         "500",
+        "--ack-failures",
     ]
     log_handle = ARCHITECT_RUNNER_LOG.open("a", encoding="utf-8")
     subprocess.Popen(cmd, stdout=log_handle, stderr=log_handle, cwd=str(BRAIN), close_fds=True, start_new_session=True)
@@ -714,6 +854,7 @@ def main():
     p.add_argument("--no-input", action="store_true", help="Disable Architect prompt input in interactive TTY mode")
     p.add_argument("--send", default=None, help="Send one Architect prompt through the broker and exit")
     p.add_argument("--to", default="all", help="Recipient for --send: all, Codex, Maestro, Gemini, or Claude")
+    p.add_argument("--from-agent", default="Architect", help="Sender for --send. Use Codex/Maestro/Gemini/Bridge for agent room lines; Architect/Jake for real Jake prompts")
     p.add_argument("--priority", type=int, default=10, help="Broker priority for Architect prompts (default 10)")
     p.add_argument("--auto-drain", action="store_true", help="With --send, also run local agent CLIs once for replies")
     p.add_argument("--no-auto-drain", action="store_true", help="Disable local agent CLI replies for typed Jake prompts")
@@ -732,26 +873,31 @@ def main():
 
     if args.send is not None:
         recipients = recipients_from_target(args.to)
-        thread, responses = send_architect_prompt(args.send, recipients, priority=args.priority)
+        from_agent = normalize_sender(args.from_agent)
+        if from_agent == ARCHITECT_AGENT:
+            thread, responses = send_architect_prompt(args.send, recipients, priority=args.priority)
+        else:
+            thread, responses = send_room_line(args.send, from_agent, recipients, priority=args.priority)
         if not all(item.get("ok") for item in responses):
             print(json.dumps({"ok": False, "responses": responses}, indent=2, ensure_ascii=False), file=sys.stderr)
             return 1
-        if args.auto_drain:
+        if args.auto_drain and from_agent == ARCHITECT_AGENT:
             trigger_architect_runner(thread, recipients)
-        drain_note = " · runners waking" if args.auto_drain else ""
-        print(f"[sent] Jake -> {', '.join(recipients)} · thread={thread}{drain_note}")
+        drain_note = " · runners waking in background" if args.auto_drain and from_agent == ARCHITECT_AGENT else ""
+        display_sender = "Jake" if from_agent == ARCHITECT_AGENT else from_agent
+        display_target = (
+            ", ".join(recipients)
+            if from_agent == ARCHITECT_AGENT
+            else ("room" if args.to.lower() in {"all", "everyone", "broadcast", "three-headed-snake"} else ", ".join(recipients))
+        )
+        print(f"[sent] {display_sender} -> {display_target} · thread={thread}{drain_note}")
         return 0
 
     # Starting watermark
     if args.since_id is not None:
         since_id = args.since_id
     else:
-        all_msgs = fetch(0, 10000, source)
-        if all_msgs:
-            max_id = max(int(m["id"]) for m in all_msgs)
-            since_id = max(0, max_id - args.replay)
-        else:
-            since_id = 0
+        since_id = max(0, latest_message_id() - args.replay)
 
     # Banner
     title = (

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Persistent live-room orchestrator for The Three Headed Snake XXX.
 
-The broker and chat console were already live. The missing piece was a hot
-room coordinator: something that watches Jake's broker prompts continuously,
-posts immediate visible ACK/handoff/status lines, fans one-agent prompts out to
-all three heads, and then lets the slower agent CLI receipts arrive after the
-room is already moving.
+The broker and chat console were already live. This daemon watches Jake's
+broker prompts continuously, fans one-agent prompts out to all three heads, and
+launches slower agent CLI receipts in the background. Diagnostic status events
+still exist for --show-plumbing, but default chat view should show the real
+agent replies instead of canned role ceremony.
 """
 from __future__ import annotations
 
@@ -41,30 +41,30 @@ SNAKE_AGENTS = ("Codex", "Maestro", "Gemini")
 ARCHITECT_AGENT = "Architect"
 PEER_RING = {"Codex": "Maestro", "Maestro": "Gemini", "Gemini": "Codex"}
 
-LANE_ACK = {
-    "Codex": "Build lane online. I’m owning implementation, wiring, tests, and proof.",
-    "Maestro": "Standards lane online. I’m holding scope, clarity, and Jake’s criteria.",
-    "Gemini": "Outside-angle lane online. I’m watching assumptions, speed, and missed edges.",
+ACK_TEXT = {
+    "Codex": "Got you. I’m checking it and I’ll drop the real answer here.",
+    "Maestro": "I’m on it. I’ll keep it straight and skip the speech.",
+    "Gemini": "Got it. I’ll give you the useful take, not the ceremony.",
 }
 
 PEER_HANDOFF = {
-    "Codex": "Implementation lane claimed. Maestro, pressure-test the standard while I keep proof flowing.",
-    "Maestro": "Standards lane active. Gemini, watch the latency holes and outside-angle misses.",
-    "Gemini": "Outside-angle lane active. Codex, I’m checking wiring risk while you ship the moving parts.",
+    "Codex": "Maestro, jump in only if you’ve got something useful.",
+    "Maestro": "Gemini, keep it tight.",
+    "Gemini": "Codex, bring proof if there’s proof.",
 }
 
 ROOM_DIALOGUE = {
     "Codex": {
-        "to": "Maestro",
-        "text": "I’ve got the build lane. Maestro, keep Jake’s standard sharp while I wire the proof.",
+        "to": ARCHITECT_AGENT,
+        "text": "Got you. I’ll bring back the real answer.",
     },
     "Maestro": {
-        "to": "Gemini",
-        "text": "I’ll hold the criteria and final judgment. Gemini, watch for blind spots and speed traps.",
+        "to": ARCHITECT_AGENT,
+        "text": "Heard. I’ll keep it plain.",
     },
     "Gemini": {
-        "to": "Codex",
-        "text": "I’m watching the outside angles. Codex, keep the room honest, fast, and tested.",
+        "to": ARCHITECT_AGENT,
+        "text": "Got it. I’ll keep it useful.",
     },
 }
 
@@ -245,7 +245,7 @@ def build_live_events(group: PromptGroup) -> list[LiveEvent]:
                 to_agent=ARCHITECT_AGENT,
                 kind="status",
                 phase="ack",
-                text=LANE_ACK[agent],
+                text=ACK_TEXT[agent],
                 sequence=seq,
             )
         )
@@ -271,7 +271,7 @@ def build_live_events(group: PromptGroup) -> list[LiveEvent]:
                 to_agent=ARCHITECT_AGENT,
                 kind="status",
                 phase="working",
-                text=f"{agent} is active on thread {group.thread}. Live-room coordination is moving now; slower final receipts can land after.",
+                text=f"{agent} is working on it. The reply will show here.",
                 sequence=seq,
                 delay_ms=75,
             )
@@ -298,17 +298,6 @@ def build_room_dialogue(group: PromptGroup) -> list[LiveEvent]:
             )
         )
         seq += 1
-    events.append(
-        LiveEvent(
-            from_agent="Codex",
-            to_agent=ARCHITECT_AGENT,
-            kind="note",
-            phase="dialogue",
-            text="Jake, this room is moving in plain English now. The plumbing is still running underneath, but the window should read like us talking.",
-            sequence=seq,
-            delay_ms=50,
-        )
-    )
     return events
 
 
@@ -486,7 +475,7 @@ def fanout_architect_prompts(client: BrokerClient, group: PromptGroup) -> list[d
                     "original_source_message_ids": [str(m.get("message_id", "")) for m in group.source_messages],
                     "instructions": (
                         "Jake prompted one head, but his current criterion is that The Three Headed Snake XXX works together. "
-                        "Reply through the broker/terminal in plain English."
+                        "Reply through the broker/terminal like a normal group chat: casual, direct, useful, and no role ceremony."
                     ),
                 },
             )
@@ -512,6 +501,7 @@ def launch_architect_runner(group: PromptGroup, timeout: int, allow_tools: bool 
         "1",
         "--timeout",
         str(timeout),
+        "--ack-failures",
     ]
     if allow_tools:
         cmd.append("--allow-tools")
@@ -581,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--state", default=str(STATE_PATH))
     parser.add_argument("--fanout", action=argparse.BooleanOptionalAction, default=True, help="Fan one-agent Architect prompts out to all three heads")
-    parser.add_argument("--room-dialogue", action=argparse.BooleanOptionalAction, default=True, help="Post plain-English agent-to-agent room dialogue before diagnostic status events")
+    parser.add_argument("--room-dialogue", action=argparse.BooleanOptionalAction, default=False, help="Post optional canned room dialogue before diagnostic status events; default off so the chat waits for real agent replies")
     parser.add_argument("--final-runners", action=argparse.BooleanOptionalAction, default=True, help="Launch slower real CLI receipts after instant live events")
     parser.add_argument("--runner-timeout", type=int, default=120)
     parser.add_argument("--runner-allow-tools", action="store_true", help="Allow final runner CLIs to use tools")

@@ -113,7 +113,10 @@ class ThreeHeadedSnakeOrchestratorTests(unittest.TestCase):
 
     def test_runner_launch_acks_failures_to_prevent_duplicate_blocker_storms(self) -> None:
         group = orchestrator.group_messages([self.architect_message("Codex")])[0]
-        with patch.object(orchestrator.subprocess, "Popen") as popen:
+        tmp_log = Path(tempfile.gettempdir()) / "snake-test-runner.log"
+        with patch.object(orchestrator.subprocess, "Popen") as popen, \
+                patch.object(orchestrator, "ARCHITECT_RUNNER", Path(__file__)), \
+                patch.object(orchestrator, "ARCHITECT_RUNNER_LOG", tmp_log):
             orchestrator.launch_architect_runner(group, timeout=90)
         cmd = popen.call_args.args[0]
         self.assertIn("--ack-failures", cmd)

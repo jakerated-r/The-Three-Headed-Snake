@@ -34,6 +34,7 @@ LAUNCHER = {
     "Codex": SNAKE + "/codex-head.sh",
     "Gemini": SNAKE + "/gemini-head.sh",
 }[HEAD]
+GEMINI_QUOTA_FLAG = SNAKE + "/.gemini-quota-" + datetime.datetime.now(datetime.timezone.utc).date().isoformat()
 
 
 def cmd_for(prompt: str) -> list[str]:
@@ -75,7 +76,7 @@ def cmd_for(prompt: str) -> list[str]:
         "-p",
         prompt,
         "-m",
-        "gemini-2.5-flash",
+        os.environ.get("SNAKE_GEMINI_MODEL", "gemini-2.5-flash-lite"),
         "--approval-mode",
         "plan",
         "--output-format",
@@ -129,6 +130,9 @@ def age(message: dict) -> float:
 
 def clean_output(stdout: str, stderr: str) -> str:
     text = (stdout or "").strip() or (stderr or "").strip()
+    quota = quota_receipt(text)
+    if quota:
+        return quota
     lines: list[str] = []
     skip_next_numeric = False
     for raw in text.splitlines():
@@ -154,10 +158,48 @@ def clean_output(stdout: str, stderr: str) -> str:
     return "\n".join(lines).strip() or text[:1500] or "[empty]"
 
 
+def quota_receipt(text: str) -> str:
+    lower = (text or "").lower()
+    if "terminalquotaerror" not in lower and "exhausted your daily quota" not in lower:
+        return ""
+    report_match = re.search(r"Full report available at:\s*(\S+)", text or "")
+    report = report_match.group(1) if report_match else "Gemini CLI TerminalQuotaError"
+    return f"Gemini is blocked: daily quota exhausted for the selected model. Evidence: {report}"
+
+
+def read_gemini_quota_flag() -> str:
+    if HEAD != "Gemini" or not os.path.exists(GEMINI_QUOTA_FLAG):
+        return ""
+    try:
+        with open(GEMINI_QUOTA_FLAG, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except Exception:
+        return "Gemini is blocked: daily quota exhausted for the selected model."
+
+
+def write_gemini_quota_flag(receipt: str) -> None:
+    if HEAD != "Gemini" or not receipt:
+        return
+    try:
+        with open(GEMINI_QUOTA_FLAG, "w", encoding="utf-8") as handle:
+            handle.write(receipt + "\n")
+    except Exception:
+        pass
+
+
+def model_safe_text(text: str) -> str:
+    return re.sub(r"@([A-Za-z][A-Za-z0-9_-]*)", r"[at]\1", text or "")
+
+
 def run_head(prompt: str) -> str:
+    quota_block = read_gemini_quota_flag()
+    if quota_block:
+        return quota_block
     try:
         result = subprocess.run(cmd_for(prompt), capture_output=True, text=True, timeout=120, cwd=HOME, check=False)
-        return clean_output(result.stdout, result.stderr)[:1500]
+        cleaned = clean_output(result.stdout, result.stderr)[:1500]
+        write_gemini_quota_flag(quota_receipt((result.stdout or "") + "\n" + (result.stderr or "")))
+        return cleaned
     except subprocess.TimeoutExpired:
         return "[timeout >120s]"
 
@@ -239,7 +281,7 @@ def main() -> int:
                             text = guardrails.message_text(body)
                             prompt = (
                                 f"You are {HEAD}, one of three AI teammates (Maestro=Claude, Codex, Gemini) "
-                                f"collaborating live on Jake's Mac. A teammate ({sender}) said: {text}. "
+                                f"collaborating live on Jake's Mac. A teammate ({sender}) said: {model_safe_text(text)}. "
                                 "Reply to them in ONE concise plain-English line."
                             )
                             reply = run_head(prompt)

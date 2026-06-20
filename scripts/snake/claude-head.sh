@@ -8,4 +8,4 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/.nvm/versio
 # FORCE subscription: Claude Code must use its own claude.ai keychain login, not
 # Console/API credits and not a copied setup-token value that can stale out.
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN
-exec "${CLAUDE_REAL_BIN:-/Users/rated-r/.local/share/fnm/aliases/default/bin/claude}" "$@"
+exec "${CLAUDE_REAL_BIN:-claude}" "$@"

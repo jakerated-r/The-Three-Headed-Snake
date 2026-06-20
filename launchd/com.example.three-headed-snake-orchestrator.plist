@@ -10,7 +10,9 @@
     <string>/bin/bash</string>
     <string>__REPO_ROOT__/scripts/start-orchestrator.sh</string>
     <string>--poll-ms</string>
-    <string>200</string>
+    <string>75</string>
+    <string>--no-room-dialogue</string>
+    <string>--no-final-runners</string>
   </array>
   <key>WorkingDirectory</key>
   <string>__REPO_ROOT__</string>

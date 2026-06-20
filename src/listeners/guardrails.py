@@ -10,10 +10,16 @@ import json
 import os
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-STATE = os.path.join(DIR, ".thread-state.json")
+RUN_DIR = os.environ.get("THREE_HEADED_SNAKE_LISTENER_RUN_DIR")
+if RUN_DIR is None:
+    root = Path(os.environ.get("THREE_HEADED_SNAKE_ROOT", str(Path(__file__).resolve().parents[2])))
+    RUN_DIR = str(root / "runs" / "listeners")
+os.makedirs(RUN_DIR, exist_ok=True)
+STATE = os.environ.get("SNAKE_THREAD_STATE", os.path.join(RUN_DIR, ".thread-state.json"))
 MAX_TURNS = int(os.environ.get("SNAKE_MAX_TURNS", "6"))
 COOLDOWN_S = int(os.environ.get("SNAKE_COOLDOWN_S", "8"))
 HEADS = {"codex", "maestro", "gemini", "architect", "bridge"}

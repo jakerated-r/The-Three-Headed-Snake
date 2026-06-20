@@ -12,4 +12,7 @@ while IFS='=' read -r env_name _; do
       ;;
   esac
 done < <(/usr/bin/env)
+if [ "$#" -eq 0 ]; then
+  set -- --poll-ms 75 --no-room-dialogue --no-final-runners
+fi
 exec /usr/bin/python3 "$ROOT/src/orchestrator/three-headed-snake-orchestrator.py" "$@"

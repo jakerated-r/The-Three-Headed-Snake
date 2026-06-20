@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -uo pipefail
-DIR="${BRAIN_ROOT:-/Users/rated-r/rated r brain}/outputs/coop-tools/snake"
+ROOT="${THREE_HEADED_SNAKE_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+DIR="${THREE_HEADED_SNAKE_LISTENER_RUN_DIR:-$ROOT/runs/listeners}"
+mkdir -p "$DIR"
 KILL="$DIR/.SNAKE_KILL"; DAY="$(date -u +%F)"; CNT="$DIR/.budget-$DAY"
 CAP="${SNAKE_DAILY_CAP:-300}"
 case "${1:-check}" in

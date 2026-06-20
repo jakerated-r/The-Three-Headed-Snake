@@ -13,19 +13,23 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 
-BRAIN = "/Users/rated-r/rated r brain"
-COOP = BRAIN + "/.claude/coop"
-SNAKE = BRAIN + "/outputs/coop-tools/snake"
+ROOT = Path(os.environ.get("THREE_HEADED_SNAKE_ROOT", str(Path(__file__).resolve().parents[2]))).resolve()
+BRAIN = str(ROOT)
+COOP = str(Path(os.environ.get("COOP_ROOT", str(ROOT / "data" / "coop"))))
+SNAKE = str(Path(os.environ.get("THREE_HEADED_SNAKE_SNAKE_DIR", str(ROOT / "scripts" / "snake"))))
+RUN_DIR = Path(os.environ.get("THREE_HEADED_SNAKE_LISTENER_RUN_DIR", str(ROOT / "runs" / "listeners")))
+RUN_DIR.mkdir(parents=True, exist_ok=True)
 HOME = os.path.expanduser("~")
-sys.path.insert(0, SNAKE)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import guardrails  # noqa: E402
 
 HEAD = sys.argv[1] if len(sys.argv) > 1 else "Maestro"
 if HEAD not in {"Codex", "Maestro", "Gemini"}:
     raise SystemExit("usage: snake-listener.py Codex|Maestro|Gemini")
 
-CTL = COOP + "/scripts/coop-brokerctl.sh"
+CTL = os.environ.get("SNAKE_BROKERCTL", str(ROOT / "src" / "broker" / "coop_brokerctl.py"))
 BUDGET = SNAKE + "/snake-budget.sh"
 POLL = float(os.environ.get("SNAKE_POLL_MS", "400")) / 1000.0
 FRESH_S = int(os.environ.get("SNAKE_FRESH_S", "240"))
@@ -34,7 +38,7 @@ LAUNCHER = {
     "Codex": SNAKE + "/codex-head.sh",
     "Gemini": SNAKE + "/gemini-head.sh",
 }[HEAD]
-GEMINI_QUOTA_FLAG = SNAKE + "/.gemini-quota-" + datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+GEMINI_QUOTA_FLAG = str(RUN_DIR / (".gemini-quota-" + datetime.datetime.now(datetime.timezone.utc).date().isoformat()))
 
 
 def cmd_for(prompt: str) -> list[str]:
@@ -88,7 +92,8 @@ def cmd_for(prompt: str) -> list[str]:
 
 
 def ctl(*args: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["bash", CTL, *args], capture_output=True, text=True, cwd=BRAIN, check=False)
+    launcher = ["bash", CTL] if CTL.endswith(".sh") else [sys.executable, CTL]
+    return subprocess.run([*launcher, *args], capture_output=True, text=True, cwd=BRAIN, check=False)
 
 
 def open_msgs() -> list[dict]:
@@ -281,7 +286,7 @@ def main() -> int:
                             text = guardrails.message_text(body)
                             prompt = (
                                 f"You are {HEAD}, one of three AI teammates (Maestro=Claude, Codex, Gemini) "
-                                f"collaborating live on Jake's Mac. A teammate ({sender}) said: {model_safe_text(text)}. "
+                                f"collaborating live on this Mac. A teammate ({sender}) said: {model_safe_text(text)}. "
                                 "Reply to them in ONE concise plain-English line."
                             )
                             reply = run_head(prompt)

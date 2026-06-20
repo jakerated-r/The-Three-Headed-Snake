@@ -2,9 +2,9 @@
 # snake doctor — true per-head CLI health. Separates the daemon-PATH failure (node not found)
 # from account failures (credit/auth/rate-limit) so the chat stops mislabeling everything "auth failed".
 set -uo pipefail
-BRAIN="/Users/rated-r/rated r brain"
-CLAUDE_HEAD="$BRAIN/outputs/coop-tools/snake/claude-head.sh"
-GEMINI_HEAD="$BRAIN/outputs/coop-tools/snake/gemini-head.sh"
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+CLAUDE_HEAD="$ROOT/scripts/snake/claude-head.sh"
+GEMINI_HEAD="$ROOT/scripts/snake/gemini-head.sh"
 classify() {
   local o="$1"
   if   echo "$o" | grep -qiE "env: node|node: No such|command not found|No such file or directory"; then echo "RUNNER-PATH — node/CLI not on PATH (daemon env too thin; run via login shell or set PATH)"
